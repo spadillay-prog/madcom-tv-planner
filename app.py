@@ -1,5 +1,5 @@
 import calendar
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time
 import io
 import math
 import openpyxl
@@ -45,7 +45,7 @@ def load_compara_inventory():
         hra_val = ws_chv.cell(r, 5).value
         hra = (
             hra_val.strftime("%H:%M")
-            if isinstance(hra_val, (datetime, datetime.time))
+            if isinstance(hra_val, (datetime, time))
             else str(hra_val or "")
         )
         rat = ws_chv.cell(r, 11).value or 0.0
@@ -133,12 +133,12 @@ def load_compara_inventory():
         fin_val = ws_tvn.cell(r, 6).value
         ini = (
             ini_val.strftime("%H:%M")
-            if isinstance(ini_val, (datetime, datetime.time))
+            if isinstance(ini_val, (datetime, time))
             else str(ini_val or "")
         )
         fin = (
             fin_val.strftime("%H:%M")
-            if isinstance(fin_val, (datetime, datetime.time))
+            if isinstance(fin_val, (datetime, time))
             else str(fin_val or "")
         )
         hra = f"{ini} - {fin}" if ini and fin else ini
@@ -304,7 +304,6 @@ with st.sidebar:
 # -------------------------------------------------------------
 st.subheader("📋 Selección de Inventario para Pauta")
 
-# Preparamos tabla con tarifas correspondientes al bloque
 inventory_rows = []
 for p in progs_db:
     seg_aplicado = seg_prime if p["Bloque"] == "PRIME" else seg_off
@@ -327,7 +326,6 @@ for p in progs_db:
 
 df_inv = pd.DataFrame(inventory_rows)
 
-# Programas recomendados base para pauta de 24 líneas (capacidad del Excel base filas 18 a 42)
 default_programs_set = {
     "Chv Noticias Central",
     "Primer Plano",
@@ -377,7 +375,6 @@ selected_programs_df = st.data_editor(
 
 active_progs = selected_programs_df[selected_programs_df["En Pauta"]].copy()
 
-# Limitar a máximo 24 programas para respetar la plantilla física del Excel base
 if len(active_progs) > 24:
     st.info(
         f"Se seleccionaron {len(active_progs)} programas. Se optimizarán los 24 con mejor afinidad de CPP y balance de SOI."
@@ -387,12 +384,10 @@ if len(active_progs) > 24:
 # -------------------------------------------------------------
 # 4. SIMULACIÓN DE DISTRIBUCIÓN DIARIA (CALENDARIO DE CAMPAÑA)
 # -------------------------------------------------------------
-# Generar días de campaña
 dias_list = [start_date + timedelta(days=i) for i in range(num_dias_campana)]
 dias_map_es = {0: "L", 1: "M", 2: "W", 3: "J", 4: "V", 5: "S", 6: "D"}
 
 
-# Algoritmo de distribución de spots
 def is_day_allowed(dia_char, dias_tarifa_str):
     d = dias_tarifa_str.upper()
     if "L-D" in d or "LMWJVD" in d:
@@ -406,25 +401,21 @@ def is_day_allowed(dia_char, dias_tarifa_str):
     return False
 
 
-# Simular inserciones
 spots_distrib = {p["Programa"]: [0] * len(dias_list) for _, p in active_progs.iterrows()}
 
 for p_idx, (_, prog) in enumerate(active_progs.iterrows()):
     p_name = prog["Programa"]
     bloque = prog["Bloque"]
-    # Frecuencia estimada según bloque
     freq_target = 2 if bloque == "OFF PRIME" else 1
 
     for d_idx, dia_dt in enumerate(dias_list):
         dia_char = dias_map_es[dia_dt.weekday()]
         if is_day_allowed(dia_char, prog["Días"]):
-            # Alternancia según frecuencia
             if freq_target == 1 and (d_idx % 2 == 0):
                 spots_distrib[p_name][d_idx] = min(1, max_spots_dia_prog)
             elif freq_target > 1:
                 spots_distrib[p_name][d_idx] = min(freq_target, max_spots_dia_prog)
 
-# Totales simulados
 total_spots_sim = sum(sum(v) for v in spots_distrib.values())
 active_progs["Total_Spots"] = active_progs["Programa"].map(
     lambda p: sum(spots_distrib[p])
@@ -441,7 +432,6 @@ pct_prime_sim = (
     (trps_prime_sim / trps_totales_sim) if trps_totales_sim > 0 else 0.0
 )
 
-# Métricas en pantalla
 colA, colB, colC, colD = st.columns(4)
 colA.metric(
     "Inversión Proyectada",
@@ -470,7 +460,6 @@ def export_to_excel_base(
     wb = openpyxl.load_workbook("Excel base.xlsx")
     ws = wb["Pauta mes tipo"]
 
-    # 1. Metadatos
     meses_es = [
         "",
         "ENERO",
@@ -493,12 +482,10 @@ def export_to_excel_base(
     ws["C12"] = campana
     ws["C13"] = version
 
-    # 2. Configuración de Columnas de Fecha (J a AM, cols 10 a 39 = 30 días)
     ws["J15"] = nombre_mes
 
     dias_semana_abrev = {0: "L", 1: "M", 2: "W", 3: "J", 4: "V", 5: "S", 6: "D"}
 
-    # Limpiar días existentes en fila 16 y 17
     for c in range(10, 40):
         ws.cell(16, c).value = None
         ws.cell(17, c).value = None
@@ -508,68 +495,60 @@ def export_to_excel_base(
         ws.cell(16, col_idx).value = dias_semana_abrev[cur_dt.weekday()]
         ws.cell(17, col_idx).value = cur_dt.day
 
-    # 3. Llenar filas de programas (Filas 18 a 42)
-    # Primero limpiar filas 18 a 42
     for r in range(18, 43):
-        for c in range(2, 10):  # B a I
+        for c in range(2, 10):
             ws.cell(r, c).value = None
-        for c in range(10, 40):  # J a AM
+        for c in range(10, 40):
             ws.cell(r, c).value = None
-        ws.cell(r, 41).value = None  # AO (Pond)
-        ws.cell(r, 42).value = None  # AP (Rating)
-        ws.cell(r, 44).value = None  # AR (Valor unitario)
-        ws.cell(r, 47).value = None  # AU (Trps prime)
+        ws.cell(r, 41).value = None
+        ws.cell(r, 42).value = None
+        ws.cell(r, 44).value = None
+        ws.cell(r, 47).value = None
 
     for i, (_, row_p) in enumerate(active_p_df.iterrows()):
         curr_row = 18 + i
         p_name = row_p["Programa"]
 
-        ws.cell(curr_row, 2, value=row_p["Canal"])  # B: Canal
-        ws.cell(curr_row, 3, value=p_name)  # C: Programa
+        ws.cell(curr_row, 2, value=row_p["Canal"])
+        ws.cell(curr_row, 3, value=p_name)
         ws.cell(
             curr_row,
             4,
             value="Prime" if row_p["Bloque"] == "PRIME" else "Off",
-        )  # D: Bloque
-        ws.cell(curr_row, 5, value=row_p["Días"])  # E: Días
-        ws.cell(curr_row, 6, value="Spot")  # F: Derechos
-        ws.cell(curr_row, 7, value=row_p["Horario"])  # G: Inicio/Horario
-        ws.cell(curr_row, 9, value=int(row_p["Segundos"]))  # I: Segundos
+        )
+        ws.cell(curr_row, 5, value=row_p["Días"])
+        ws.cell(curr_row, 6, value="Spot")
+        ws.cell(curr_row, 7, value=row_p["Horario"])
+        ws.cell(curr_row, 9, value=int(row_p["Segundos"]))
 
-        # Días de pauta (J a AM)
         daily_spots = distrib_dict.get(p_name, [])
         for d_i, num_s in enumerate(daily_spots[:30]):
             if num_s > 0:
                 ws.cell(curr_row, 10 + d_i, value=num_s)
 
-        # Fórmulas y valores
-        ws.cell(curr_row, 40, value=f"=SUM(J{curr_row}:AM{curr_row})")  # AN: Total
-        ws.cell(curr_row, 41, value=1)  # AO: Pond = 1 (Pauta Libre)
-        ws.cell(curr_row, 42, value=float(row_p["Rating"]))  # AP: Rating
-        ws.cell(curr_row, 43, value=f"=+AP{curr_row}*AN{curr_row}")  # AQ: TRPS
-        ws.cell(curr_row, 44, value=float(row_p["Tarifa"]))  # AR: Valor Unitario
-        ws.cell(curr_row, 45, value=f"=AR{curr_row}*AN{curr_row}")  # AS: Valor Total
+        ws.cell(curr_row, 40, value=f"=SUM(J{curr_row}:AM{curr_row})")
+        ws.cell(curr_row, 41, value=1)
+        ws.cell(curr_row, 42, value=float(row_p["Rating"]))
+        ws.cell(curr_row, 43, value=f"=+AP{curr_row}*AN{curr_row}")
+        ws.cell(curr_row, 44, value=float(row_p["Tarifa"]))
+        ws.cell(curr_row, 45, value=f"=AR{curr_row}*AN{curr_row}")
         ws.cell(
             curr_row,
             46,
             value=f"=IF(AQ{curr_row}>0, AS{curr_row}/AQ{curr_row}, 0)",
-        )  # AT: CPP
-
-        # AU: Trps Prime (Fórmula activa)
+        )
         ws.cell(
             curr_row,
             47,
             value=f'=IF(D{curr_row}="Prime", AQ{curr_row}, 0)',
         )
 
-    # 4. Fila 43: Totales y TRPS POR DÍA
-    ws.cell(43, 40, value=f"=SUM(AN18:AN42)")  # Total Derechos
-    ws.cell(43, 43, value=f"=SUM(AQ18:AQ42)")  # Total TRPS
-    ws.cell(43, 45, value=f"=SUM(AS18:AS42)")  # Total Inversión
-    ws.cell(43, 46, value=f"=IF(AQ43>0, AS43/AQ43, 0)")  # CPP Ponderado
-    ws.cell(43, 47, value=f"=SUM(AU18:AU42)")  # Total TRPS Prime
+    ws.cell(43, 40, value=f"=SUM(AN18:AN42)")
+    ws.cell(43, 43, value=f"=SUM(AQ18:AQ42)")
+    ws.cell(43, 45, value=f"=SUM(AS18:AS42)")
+    ws.cell(43, 46, value=f"=IF(AQ43>0, AS43/AQ43, 0)")
+    ws.cell(43, 47, value=f"=SUM(AU18:AU42)")
 
-    # Guardar en buffer en memoria
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
