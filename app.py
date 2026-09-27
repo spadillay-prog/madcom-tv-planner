@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta, time
 import io
 import math
 import openpyxl
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 import pandas as pd
 import streamlit as st
 
@@ -22,19 +23,8 @@ def load_compara_inventory():
     # CHV
     ws_chv = wb["CHV"]
     dur_map_chv = {
-        70: 9,
-        60: 12,
-        55: 13,
-        50: 14,
-        45: 15,
-        40: 16,
-        35: 17,
-        30: 18,
-        25: 19,
-        20: 20,
-        15: 21,
-        10: 22,
-        5: 23,
+        70: 9, 60: 12, 55: 13, 50: 14, 45: 15, 40: 16,
+        35: 17, 30: 18, 25: 19, 20: 20, 15: 21, 10: 22, 5: 23,
     }
     for r in range(10, ws_chv.max_row + 1):
         prog = ws_chv.cell(r, 3).value
@@ -255,12 +245,12 @@ with st.sidebar:
     presupuesto_total = st.number_input(
         "Inversión Total Meta (CLP):",
         min_value=1000000,
-        value=50000000,
+        value=40000000,
         step=1000000,
         format="%d",
     )
     objetivo_trps = st.number_input(
-        "Objetivo TRPs:", min_value=10, value=250, step=10
+        "Objetivo TRPs:", min_value=10, value=200, step=10
     )
     sov_prime_target = (
         st.slider("SOV TRPs Prime (%):", min_value=10, max_value=90, value=70) / 100.0
@@ -295,14 +285,21 @@ with st.sidebar:
     if soi_total != 100:
         st.warning(f"Suma de SOI = {soi_total}% (Ajustar a 100%)")
 
+    soi_dict = {
+        "CHV": (soi_chv / 100.0) if soi_total == 100 else 0.30,
+        "Mega": (soi_mega / 100.0) if soi_total == 100 else 0.30,
+        "Canal 13": (soi_c13 / 100.0) if soi_total == 100 else 0.25,
+        "TVN": (soi_tvn / 100.0) if soi_total == 100 else 0.15,
+    }
+
     max_spots_dia_prog = st.number_input(
         "Máx. spots por programa por día:", min_value=1, max_value=5, value=1
     )
 
 # -------------------------------------------------------------
-# 3. CONSTRUCTOR Y SELECCIÓN DE PROGRAMAS
+# 3. SELECCIÓN INTELIGENTE DE PROGRAMAS POR CANAL Y BLOQUE
 # -------------------------------------------------------------
-st.subheader("📋 Selección de Inventario para Pauta")
+st.subheader("📋 Inventario de Programas Seleccionados")
 
 inventory_rows = []
 for p in progs_db:
@@ -326,35 +323,27 @@ for p in progs_db:
 
 df_inv = pd.DataFrame(inventory_rows)
 
-default_programs_set = {
-    "Chv Noticias Central",
-    "Primer Plano",
-    "Contigo en La Mañana A",
-    "Contigo en Directo",
-    "Chv Noticias Tarde",
-    "Meganoticias Prime",
-    "Teleserie Prime (El Señor de la Querencia)",
-    "Mucho Gusto",
-    "Meganoticias Alerta Semana",
-    "Meganoticias Alerta Finde",
-    "Teletrece",
-    "Que Dice Chile",
-    "Tu Día",
-    "Teletrece Tarde",
-    "Cultura Prime: Lugares Que Hablan",
-    "24 Horas Central",
-    "Ahora Caigo",
-    "Ahora Caigo Prime",
-    "Buenos Días a Todos",
-    "24 Horas Central Sabado",
-    "24 Horas Central Domingo",
-    "Mesa central",
-    "Domingos de película",
+default_prime_set = {
+    "Chv Noticias Central", "Primer Plano", "Fiebre de Baile", "Primer Plano Prime",
+    "Meganoticias Prime", "Teleserie Prime", "Meganoticias Prime Sabado", "Meganoticias Prime Domingo",
+    "Teletrece", "Vecinos al Límite", "Que Dice Chile Prime", "Cultura Prime", "Vertigo",
+    "24 Horas Central", "Ahora Caigo Prime", "24 Horas Central Sabado", "24 Horas Central Domingo"
+}
+default_off_set = {
+    "Contigo en La Mañana A", "Contigo en Directo", "Chv Noticias Tarde",
+    "Mucho Gusto", "Meganoticias Alerta Semana", "Meganoticias Alerta Finde",
+    "Tu Día", "Teletrece Tarde", "Que Dice Chile", "Yo Soy Betty",
+    "Buenos Días a Todos", "Ahora Caigo", "Carmen Gloria"
 }
 
-df_inv["En Pauta"] = df_inv["Programa"].apply(
-    lambda x: any(d.lower() in x.lower() for d in default_programs_set)
-)
+def is_default_selected(row):
+    prog_lower = row["Programa"].lower()
+    if row["Bloque"] == "PRIME":
+        return any(k.lower() in prog_lower for k in default_prime_set)
+    else:
+        return any(k.lower() in prog_lower for k in default_off_set)
+
+df_inv["En Pauta"] = df_inv.apply(is_default_selected, axis=1)
 
 selected_programs_df = st.data_editor(
     df_inv,
@@ -375,21 +364,25 @@ selected_programs_df = st.data_editor(
 
 active_progs = selected_programs_df[selected_programs_df["En Pauta"]].copy()
 
+# Limitar a máximo 24 programas para respetar la plantilla física del Excel base
 if len(active_progs) > 24:
-    st.info(
-        f"Se seleccionaron {len(active_progs)} programas. Se optimizarán los 24 con mejor afinidad de CPP y balance de SOI."
-    )
-    active_progs = active_progs.head(24)
+    balanced_list = []
+    for ch in ["CHV", "Mega", "Canal 13", "TVN"]:
+        sub_ch = active_progs[active_progs["Canal"] == ch]
+        sub_prime = sub_ch[sub_ch["Bloque"] == "PRIME"].sort_values("CPP Est.")
+        sub_off = sub_ch[sub_ch["Bloque"] == "OFF PRIME"].sort_values("CPP Est.")
+        balanced_list.extend(sub_prime.head(3).to_dict("records"))
+        balanced_list.extend(sub_off.head(3).to_dict("records"))
+    active_progs = pd.DataFrame(balanced_list).head(24)
 
 # -------------------------------------------------------------
-# 4. SIMULACIÓN DE DISTRIBUCIÓN DIARIA (CALENDARIO DE CAMPAÑA)
+# 4. OPTIMIZADOR CON TOPE DE PRESUPUESTO & DÍAS PERMITIDOS
 # -------------------------------------------------------------
 dias_list = [start_date + timedelta(days=i) for i in range(num_dias_campana)]
 dias_map_es = {0: "L", 1: "M", 2: "W", 3: "J", 4: "V", 5: "S", 6: "D"}
 
-
 def is_day_allowed(dia_char, dias_tarifa_str):
-    d = dias_tarifa_str.upper()
+    d = str(dias_tarifa_str).upper()
     if "L-D" in d or "LMWJVD" in d:
         return True
     if "L-V" in d and dia_char in ["L", "M", "W", "J", "V"]:
@@ -400,26 +393,110 @@ def is_day_allowed(dia_char, dias_tarifa_str):
         return True
     return False
 
+def optimize_pauta(progs_df, dates, budget_meta, soi_map, prime_target_pct, max_per_day):
+    spots_grid = {p["Programa"]: [0] * len(dates) for _, p in progs_df.iterrows()}
+    chan_budget = {ch: budget_meta * pct for ch, pct in soi_map.items()}
+    chan_spent = {ch: 0.0 for ch in chan_budget}
 
-spots_distrib = {p["Programa"]: [0] * len(dias_list) for _, p in active_progs.iterrows()}
+    candidates = []
+    for _, prog in progs_df.iterrows():
+        p_name = prog["Programa"]
+        ch = prog["Canal"]
+        tariff = float(prog["Tarifa"])
+        rating = float(prog["Rating"])
+        is_prime = (prog["Bloque"] == "PRIME")
+        cpp = (tariff / rating) if rating > 0 else 999999999
 
-for p_idx, (_, prog) in enumerate(active_progs.iterrows()):
-    p_name = prog["Programa"]
-    bloque = prog["Bloque"]
-    freq_target = 2 if bloque == "OFF PRIME" else 1
+        for d_i, dia_dt in enumerate(dates):
+            dia_char = dias_map_es[dia_dt.weekday()]
+            if is_day_allowed(dia_char, prog["Días"]) and tariff > 0:
+                candidates.append({
+                    "prog": p_name,
+                    "canal": ch,
+                    "d_idx": d_i,
+                    "tariff": tariff,
+                    "rating": rating,
+                    "is_prime": is_prime,
+                    "cpp": cpp,
+                })
 
-    for d_idx, dia_dt in enumerate(dias_list):
-        dia_char = dias_map_es[dia_dt.weekday()]
-        if is_day_allowed(dia_char, prog["Días"]):
-            if freq_target == 1 and (d_idx % 2 == 0):
-                spots_distrib[p_name][d_idx] = min(1, max_spots_dia_prog)
-            elif freq_target > 1:
-                spots_distrib[p_name][d_idx] = min(freq_target, max_spots_dia_prog)
+    total_spent = 0.0
+    total_trps = 0.0
+    prime_trps = 0.0
 
-total_spots_sim = sum(sum(v) for v in spots_distrib.values())
-active_progs["Total_Spots"] = active_progs["Programa"].map(
-    lambda p: sum(spots_distrib[p])
+    # Fase 1: Asignar PRIME priorizando menor CPP y respetando hasta 88% del presupuesto del canal
+    prime_cands = [c for c in candidates if c["is_prime"]]
+    prime_cands.sort(key=lambda x: x["cpp"])
+
+    for cand in prime_cands:
+        ch = cand["canal"]
+        cost = cand["tariff"]
+        p_name = cand["prog"]
+        d_idx = cand["d_idx"]
+
+        if spots_grid[p_name][d_idx] >= max_per_day:
+            continue
+        if chan_spent[ch] + cost > chan_budget[ch] * 0.88:
+            continue
+        if total_spent + cost > budget_meta * 0.82:
+            continue
+
+        spots_grid[p_name][d_idx] += 1
+        chan_spent[ch] += cost
+        total_spent += cost
+        total_trps += cand["rating"]
+        prime_trps += cand["rating"]
+
+    # Fase 2: Asignar OFF-PRIME para completar el presupuesto y balancear los canales
+    off_cands = [c for c in candidates if not c["is_prime"]]
+    off_cands.sort(key=lambda x: x["cpp"])
+
+    for cand in off_cands:
+        ch = cand["canal"]
+        cost = cand["tariff"]
+        p_name = cand["prog"]
+        d_idx = cand["d_idx"]
+
+        if spots_grid[p_name][d_idx] >= max_per_day:
+            continue
+        if chan_spent[ch] + cost > chan_budget[ch] * 1.05:
+            continue
+        if total_spent + cost > budget_meta:
+            continue
+
+        spots_grid[p_name][d_idx] += 1
+        chan_spent[ch] += cost
+        total_spent += cost
+        total_trps += cand["rating"]
+
+    # Fase 3: Relleno fino con cualquier spot disponible hasta alcanzar el presupuesto
+    all_sorted = sorted(candidates, key=lambda x: x["cpp"])
+    for cand in all_sorted:
+        cost = cand["tariff"]
+        p_name = cand["prog"]
+        d_idx = cand["d_idx"]
+
+        if spots_grid[p_name][d_idx] >= max_per_day:
+            continue
+        if total_spent + cost > budget_meta:
+            continue
+
+        spots_grid[p_name][d_idx] += 1
+        chan_spent[cand["canal"]] += cost
+        total_spent += cost
+        total_trps += cand["rating"]
+        if cand["is_prime"]:
+            prime_trps += cand["rating"]
+
+    return spots_grid
+
+# Ejecutar optimización ajustada
+spots_distrib = optimize_pauta(
+    active_progs, dias_list, presupuesto_total, soi_dict, sov_prime_target, max_spots_dia_prog
 )
+
+# Totales calculados de la simulación
+active_progs["Total_Spots"] = active_progs["Programa"].map(lambda p: sum(spots_distrib.get(p, [])))
 active_progs["Inversion"] = active_progs["Total_Spots"] * active_progs["Tarifa"]
 active_progs["TRPs"] = active_progs["Total_Spots"] * active_progs["Rating"]
 
@@ -428,16 +505,15 @@ trps_totales_sim = active_progs["TRPs"].sum()
 cpp_sim = (inv_total_sim / trps_totales_sim) if trps_totales_sim > 0 else 0
 
 trps_prime_sim = active_progs[active_progs["Bloque"] == "PRIME"]["TRPs"].sum()
-pct_prime_sim = (
-    (trps_prime_sim / trps_totales_sim) if trps_totales_sim > 0 else 0.0
-)
+pct_prime_sim = ((trps_prime_sim / trps_totales_sim) if trps_totales_sim > 0 else 0.0)
 
+# Tarjetas de resumen en pantalla
 colA, colB, colC, colD = st.columns(4)
 colA.metric(
     "Inversión Proyectada",
     f"${inv_total_sim:,.0f} CLP",
     delta=f"${inv_total_sim - presupuesto_total:,.0f} vs Presupuesto",
-    delta_color="inverse",
+    delta_color="normal" if abs(inv_total_sim - presupuesto_total) < 2000000 else "inverse",
 )
 colB.metric(
     "TRPs Totales",
@@ -452,28 +528,21 @@ colD.metric(
 )
 
 # -------------------------------------------------------------
-# 5. GENERACIÓN DEL EXCEL BASE CON FÓRMULAS ACTIVAS
+# 5. GENERACIÓN DEL EXCEL BASE CON FINES DE SEMANA DINÁMICOS Y FÓRMULAS
 # -------------------------------------------------------------
-def export_to_excel_base(
-    cliente, campana, version, start_d, end_d, active_p_df, distrib_dict
-):
+def export_to_excel_base(cliente, campana, version, start_d, end_d, active_p_df, distrib_dict):
     wb = openpyxl.load_workbook("Excel base.xlsx")
     ws = wb["Pauta mes tipo"]
 
+    # Paletas de color
+    gray_weekend_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+    white_weekday_fill = PatternFill(fill_type=None)
+    disabled_day_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+
+    # 1. Metadatos
     meses_es = [
-        "",
-        "ENERO",
-        "FEBRERO",
-        "MARZO",
-        "ABRIL",
-        "MAYO",
-        "JUNIO",
-        "JULIO",
-        "AGOSTO",
-        "SEPTIEMBRE",
-        "OCTUBRE",
-        "NOVIEMBRE",
-        "DICIEMBRE",
+        "", "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+        "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE",
     ]
     nombre_mes = f"{meses_es[start_d.month]} {start_d.year}"
 
@@ -481,67 +550,76 @@ def export_to_excel_base(
     ws["C11"] = f"{start_d.strftime('%d/%m/%Y')} al {end_d.strftime('%d/%m/%Y')}"
     ws["C12"] = campana
     ws["C13"] = version
-
     ws["J15"] = nombre_mes
 
     dias_semana_abrev = {0: "L", 1: "M", 2: "W", 3: "J", 4: "V", 5: "S", 6: "D"}
 
-    for c in range(10, 40):
-        ws.cell(16, c).value = None
-        ws.cell(17, c).value = None
+    # 2. Configurar Días y formatear dinámicamente Sábado/Domingo en gris
+    for i in range(30):
+        col_idx = 10 + i  # Columnas J (10) a AM (39)
+        if i < len(dias_list):
+            cur_dt = dias_list[i]
+            day_char = dias_semana_abrev[cur_dt.weekday()]
+            is_weekend = cur_dt.weekday() in [5, 6]  # 5=Sábado, 6=Domingo
 
-    for i, cur_dt in enumerate(dias_list[:30]):
-        col_idx = 10 + i
-        ws.cell(16, col_idx).value = dias_semana_abrev[cur_dt.weekday()]
-        ws.cell(17, col_idx).value = cur_dt.day
+            ws.cell(16, col_idx, value=day_char)
+            ws.cell(17, col_idx, value=cur_dt.day)
 
+            # Aplicar color a toda la columna (filas 16 a 43)
+            cell_fill = gray_weekend_fill if is_weekend else white_weekday_fill
+            for r in range(16, 44):
+                ws.cell(r, col_idx).fill = cell_fill
+        else:
+            # Días fuera del rango de campaña
+            ws.cell(16, col_idx, value=None)
+            ws.cell(17, col_idx, value=None)
+            for r in range(16, 44):
+                ws.cell(r, col_idx).fill = disabled_day_fill
+
+    # 3. Limpiar contenido previo de filas 18 a 42
     for r in range(18, 43):
-        for c in range(2, 10):
+        for c in range(2, 10):  # B a I
             ws.cell(r, c).value = None
-        for c in range(10, 40):
+        for c in range(10, 40):  # J a AM
             ws.cell(r, c).value = None
-        ws.cell(r, 41).value = None
-        ws.cell(r, 42).value = None
-        ws.cell(r, 44).value = None
-        ws.cell(r, 47).value = None
+        ws.cell(r, 41).value = None  # AO (Pond)
+        ws.cell(r, 42).value = None  # AP (Rating)
+        ws.cell(r, 44).value = None  # AR (Valor unitario)
+        ws.cell(r, 47).value = None  # AU (Trps prime)
 
+    # 4. Poblar programas con fórmulas activas
     for i, (_, row_p) in enumerate(active_p_df.iterrows()):
         curr_row = 18 + i
         p_name = row_p["Programa"]
 
         ws.cell(curr_row, 2, value=row_p["Canal"])
         ws.cell(curr_row, 3, value=p_name)
-        ws.cell(
-            curr_row,
-            4,
-            value="Prime" if row_p["Bloque"] == "PRIME" else "Off",
-        )
+        ws.cell(curr_row, 4, value="Prime" if row_p["Bloque"] == "PRIME" else "Off")
         ws.cell(curr_row, 5, value=row_p["Días"])
         ws.cell(curr_row, 6, value="Spot")
         ws.cell(curr_row, 7, value=row_p["Horario"])
         ws.cell(curr_row, 9, value=int(row_p["Segundos"]))
 
+        # Llenar spots diarios en columnas J a AM
         daily_spots = distrib_dict.get(p_name, [])
         for d_i, num_s in enumerate(daily_spots[:30]):
             if num_s > 0:
                 ws.cell(curr_row, 10 + d_i, value=num_s)
 
+        # Fórmulas activas estándar MADCOM
         ws.cell(curr_row, 40, value=f"=SUM(J{curr_row}:AM{curr_row})")
-        ws.cell(curr_row, 41, value=1)
+        ws.cell(curr_row, 41, value=1)  # Pond = 1 (Pauta libre)
         ws.cell(curr_row, 42, value=float(row_p["Rating"]))
         ws.cell(curr_row, 43, value=f"=+AP{curr_row}*AN{curr_row}")
         ws.cell(curr_row, 44, value=float(row_p["Tarifa"]))
         ws.cell(curr_row, 45, value=f"=AR{curr_row}*AN{curr_row}")
-        ws.cell(
-            curr_row,
-            46,
-            value=f"=IF(AQ{curr_row}>0, AS{curr_row}/AQ{curr_row}, 0)",
-        )
-        ws.cell(
-            curr_row,
-            47,
-            value=f'=IF(D{curr_row}="Prime", AQ{curr_row}, 0)',
-        )
+        ws.cell(curr_row, 46, value=f"=IF(AQ{curr_row}>0, AS{curr_row}/AQ{curr_row}, 0)")
+        ws.cell(curr_row, 47, value=f'=IF(D{curr_row}="Prime", AQ{curr_row}, 0)')
+
+    # 5. Fila 43: Totales y TRPS POR DÍA dinámicos
+    for i in range(min(len(dias_list), 30)):
+        col_letter = openpyxl.utils.get_column_letter(10 + i)
+        ws.cell(43, 10 + i, value=f"=SUMPRODUCT({col_letter}18:{col_letter}42,$AP$18:$AP$42)")
 
     ws.cell(43, 40, value=f"=SUM(AN18:AN42)")
     ws.cell(43, 43, value=f"=SUM(AQ18:AQ42)")
@@ -554,9 +632,8 @@ def export_to_excel_base(
     output.seek(0)
     return output
 
-
 # -------------------------------------------------------------
-# 6. BOTÓN DE DESCARGA DIRECTA
+# 6. DESCARGA DEL ARCHIVO EXCEL
 # -------------------------------------------------------------
 st.markdown("---")
 st.subheader("📥 Exportación Oficial MADCOM")
